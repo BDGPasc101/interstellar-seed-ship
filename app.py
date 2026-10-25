@@ -39,7 +39,7 @@ target = df_targets[df_targets['pl_name'] == selected_target_name].iloc[0]
 
 # 2. Velocity Configuration
 beta = st.sidebar.slider(
-    "Cruise Velocity (? = v/c)",
+    "Cruise Velocity (beta = v/c)",
     min_value=0.01,
     max_value=0.95,
     value=0.20,
@@ -88,7 +88,7 @@ col1, col2, col3, col4 = st.columns(4)
 col1.metric("Distance", f"{target['dist_ly']:.2f} ly")
 col2.metric("Earth Frame Time", f"{times['coord_time_years']:.1f} yrs")
 col3.metric("Ship Frame Time (Proper)", f"{times['proper_time_years']:.1f} yrs", delta=f"-{(times['coord_time_years'] - times['proper_time_years']):.1f} yrs")
-col4.metric("Lorentz Factor (?)", f"{times['gamma']:.4f}")
+col4.metric("Lorentz Factor (gamma)", f"{times['gamma']:.4f}")
 
 st.divider()
 
@@ -110,10 +110,10 @@ with col_surv_metric:
 
 with col_shield_metric:
     st.subheader("Target & Shield Telemetry")
-    st.markdown(f"**Galactic Latitude (b):** `{target['gal_b_deg']:.2f}°`")
+    st.markdown(f"**Galactic Latitude (b):** `{target['gal_b_deg']:.2f} deg`")
     st.markdown(f"**ISM Dust Multiplier:** `{target['ism_density_multiplier']:.2f}x baseline`")
-    st.markdown(f"**Expected Lethal Impacts (?):** `{survival_metrics['lambda_fatal']:.3e}`")
-    st.markdown(f"**Minimum Lethal Grain Radius:** `{survival_metrics['r_lethal_microns']:.2f} µm`")
+    st.markdown(f"**Expected Lethal Impacts (lambda):** `{survival_metrics['lambda_fatal']:.3e}`")
+    st.markdown(f"**Minimum Lethal Grain Radius:** `{survival_metrics['r_lethal_microns']:.2f} um`")
 
 st.divider()
 
@@ -160,7 +160,7 @@ with tab_curves:
 
     fig_tradeoff.update_layout(
         title="The Relativistic Dilemma: Transit Duration vs. Survival Probability",
-        xaxis=dict(title="Velocity (? = v/c)"),
+        xaxis=dict(title="Velocity (beta = v/c)"),
         yaxis=dict(title="Survival Probability (%)", range=[0, 105]),
         yaxis2=dict(
             title="Ship Time (Years)",
@@ -186,7 +186,7 @@ with tab_comparison:
         comp_list.append({
             "Target": row['pl_name'],
             "Distance (ly)": row['dist_ly'],
-            "Galactic Lat (b°)": row['gal_b_deg'],
+            "Galactic Lat (deg)": row['gal_b_deg'],
             "ISM Mult": row['ism_density_multiplier'],
             "Survival (%)": s_res['survival_prob'] * 100.0,
             "Ship Travel Time (yrs)": t_res['proper_time_years']
@@ -200,7 +200,7 @@ with tab_comparison:
         y="Survival (%)",
         color="ISM Mult",
         color_continuous_scale="Viridis_r",
-        hover_data=["Distance (ly)", "Galactic Lat (b°)", "Ship Travel Time (yrs)"],
+        hover_data=["Distance (ly)", "Galactic Lat (deg)", "Ship Travel Time (yrs)"],
         labels={"ISM Mult": "ISM Multiplier"}
     )
     fig_bar.update_layout(template="plotly_dark", yaxis_range=[0, 105], height=500)
@@ -208,7 +208,7 @@ with tab_comparison:
     
     st.dataframe(df_comp.style.format({
         "Distance (ly)": "{:.2f}",
-        "Galactic Lat (b°)": "{:.2f}",
+        "Galactic Lat (deg)": "{:.2f}",
         "ISM Mult": "{:.2f}",
         "Survival (%)": "{:.2f}",
         "Ship Travel Time (yrs)": "{:.1f}"
