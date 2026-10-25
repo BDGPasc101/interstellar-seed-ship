@@ -1,0 +1,15 @@
+# Environments
+venv/
+env/
+.env
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Data outputs
+data/
+*.csv
+
+# Streamlit config / cache
+.streamlit/
