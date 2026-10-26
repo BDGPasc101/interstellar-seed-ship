@@ -10,7 +10,8 @@ from physics.impacts import (
     ALLOY_PROPERTIES,
     SHIELD_ARCHITECTURES,
     calculate_shield_geometry,
-    calculate_economic_costs
+    calculate_economic_costs,
+    run_monte_carlo_simulation
 )
 
 st.set_page_config(
@@ -149,10 +150,11 @@ with col_shield_metric:
 st.divider()
 
 # --- ANALYTICAL PLOTS ---
-tab_curves, tab_comparison, tab_shield_design = st.tabs([
+tab_curves, tab_comparison, tab_shield_design, tab_monte_carlo = st.tabs([
     "Velocity Trade-Off Analysis",
     "Target System Comparison",
-    "Shield Geometry & Mass Budget"
+    "Shield Geometry & Mass Budget",
+    "Monte Carlo Hazard Simulation"
 ])
 
 with tab_curves:
@@ -339,3 +341,72 @@ with tab_shield_design:
         f"Pushing this shield mass from Low Earth Orbit out of Earth's gravity well requires "
         f"`{costs['escape_propellant_metric_tons']:,.1f} metric tons` of Methalox propellant."
     )
+
+with tab_monte_carlo:
+    st.subheader("Stochastic Flight Pass Simulation (10,000 Independent Trials)")
+    st.markdown(
+        "Runs a Monte Carlo engine sampling MRN power-law grain distributions "
+        "and Poisson strike counts to evaluate real-world mission outcome variance."
+    )
+
+    if st.button("Run 10,000 Flight Passes"):
+        with st.spinner("Executing 10,000 Monte Carlo flight trials..."):
+            mc_res = run_monte_carlo_simulation(
+                dist_ly=target['dist_ly'],
+                beta=beta,
+                ship_frontal_area_m2=frontal_area_m2,
+                alloy_name=selected_alloy,
+                thickness_m=armor_thickness_m,
+                ism_density_multiplier=target['ism_density_multiplier'],
+                cone_half_angle_deg=cone_half_angle,
+                architecture=selected_architecture,
+                n_simulations=10000
+            )
+
+        col_mc1, col_mc2, col_mc3, col_mc4 = st.columns(4)
+        col_mc1.metric("Flawless Transits", f"{mc_res['flawless_pct']:.1f}%")
+        col_mc2.metric("Pitting Damage Only", f"{mc_res['pitting_pct']:.1f}%")
+        col_mc3.metric("Catastrophic Breaches", f"{mc_res['breach_pct']:.1f}%")
+        col_mc4.metric("Empirical Survival Rate", f"{mc_res['mc_survival_rate']:.1f}%")
+
+        st.divider()
+
+        # Outcome Pie Chart
+        df_outcomes = pd.DataFrame([
+            {"Outcome": "Flawless Transit", "Percentage": mc_res['flawless_pct']},
+            {"Outcome": "Pitting Damage", "Percentage": mc_res['pitting_pct']},
+            {"Outcome": "Catastrophic Breach", "Percentage": mc_res['breach_pct']}
+        ])
+
+        fig_pie = px.pie(
+            df_outcomes,
+            values="Percentage",
+            names="Outcome",
+            title="Mission Outcome Distribution across 10,000 Passes",
+            color="Outcome",
+            color_discrete_map={
+                "Flawless Transit": "#00FFAA",
+                "Pitting Damage": "#FF8800",
+                "Catastrophic Breach": "#FF3344"
+            }
+        )
+        fig_pie.update_layout(template="plotly_dark", height=400)
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+        # Maximum Crater Depth Histogram
+        fig_hist = px.histogram(
+            x=mc_res["max_depths_cm"],
+            nbins=50,
+            title="Distribution of Maximum Impact Crater Depth per Mission (cm)",
+            labels={"x": "Max Crater Depth (cm)"}
+        )
+        fig_hist.add_vline(
+            x=mc_res["effective_thickness_cm"],
+            line_dash="dash",
+            line_color="red",
+            annotation_text=f"Effective Shield Thickness ({mc_res['effective_thickness_cm']:.1f} cm)"
+        )
+        fig_hist.update_layout(template="plotly_dark", height=450)
+        st.plotly_chart(fig_hist, use_container_width=True)
+    else:
+        st.info("Click **Run 10,000 Flight Passes** to trigger the vectorized Monte Carlo engine.")

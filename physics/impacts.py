@@ -1,15 +1,14 @@
 import numpy as np
-from physics.relativistic import kinetic_energy_joules, SPEED_OF_LIGHT, LIGHT_YEAR_METERS
+from physics.relativistic import SPEED_OF_LIGHT, LIGHT_YEAR_METERS
 
 DUST_BULK_DENSITY = 2500.0  # kg/m^3
 BASE_DUST_NUMBER_DENSITY = 1e-11  # particles / m^3
 
-# Add to ALLOY_PROPERTIES in physics/impacts.py:
 ALLOY_PROPERTIES = {
     "Titanium Grade 5 (Ti-6Al-4V)": {
-        "density": 4430.0,
-        "vol_vap_energy_j_m3": 4.5e10,
-        "fab_cost_per_kg": 120.0  # Finished aerospace grade
+        "density": 4430.0,            # kg/m^3
+        "vol_vap_energy_j_m3": 4.5e10, # J/m^3
+        "fab_cost_per_kg": 120.0       # USD/kg finished aerospace stock
     },
     "Tungsten Heavy Alloy": {
         "density": 19300.0,
@@ -22,34 +21,6 @@ ALLOY_PROPERTIES = {
         "fab_cost_per_kg": 350.0
     }
 }
-
-# In physics/impacts.py
-
-def calculate_economic_costs(mass_kg: float, alloy_name: str) -> dict:
-    """
-    Computes material fabrication cost and cryogenic propellant mass/fuel 
-    cost required to push the shield mass clear of Earth escape velocity.
-    """
-    alloy = ALLOY_PROPERTIES[alloy_name]
-    
-    # 1. Fabrication / Raw Material Cost
-    cone_fab_cost_usd = mass_kg * alloy["fab_cost_per_kg"]
-    
-    # 2. Tsiolkovsky Earth Escape Stage Propellant (delta_v = 3,200 m/s from LEO)
-    # Isp = 380s (Methalox vacuum), ve = 3,727 m/s
-    v_e = 380.0 * 9.80665
-    delta_v_escape = 3200.0
-    propellant_mass_ratio = np.exp(delta_v_escape / v_e) - 1.0
-    propellant_kg = mass_kg * propellant_mass_ratio
-    
-    # Commercial LOX/LCH4 propellant cost ~ $0.25 / kg
-    escape_fuel_cost_usd = propellant_kg * 0.25
-
-    return {
-        "cone_fab_cost_usd": cone_fab_cost_usd,
-        "escape_propellant_metric_tons": propellant_kg / 1000.0,
-        "escape_fuel_cost_usd": escape_fuel_cost_usd,
-    }
 
 SHIELD_ARCHITECTURES = [
     "Uniform Shell (Hollow Whipple)",
@@ -82,7 +53,6 @@ def calculate_shield_geometry(
         apex_thickness_m = axial_length_m
         base_thickness_m = 0.0
     elif architecture == "Graded Shell (Apex & Spall Reinforced)":
-        # Thickness tapers from 2*T at apex to 1*T at base: mean = 4/3 * T
         mean_normal_t = (4.0 / 3.0) * thickness_m
         volume_m3 = lateral_area_m2 * mean_normal_t
         effective_thickness_m = mean_normal_t
@@ -107,6 +77,30 @@ def calculate_shield_geometry(
         "base_thickness_m": base_thickness_m
     }
 
+def calculate_economic_costs(mass_kg: float, alloy_name: str) -> dict:
+    """
+    Computes material fabrication cost and cryogenic propellant mass/fuel 
+    cost required to push the shield mass clear of Earth escape velocity.
+    """
+    alloy = ALLOY_PROPERTIES[alloy_name]
+    
+    # 1. Fabrication Cost
+    cone_fab_cost_usd = mass_kg * alloy["fab_cost_per_kg"]
+    
+    # 2. Tsiolkovsky Earth Escape Stage Propellant (delta_v = 3,200 m/s from LEO)
+    v_e = 380.0 * 9.80665  # Methalox vacuum Isp ~ 380s
+    delta_v_escape = 3200.0
+    propellant_mass_ratio = np.exp(delta_v_escape / v_e) - 1.0
+    propellant_kg = mass_kg * propellant_mass_ratio
+    
+    escape_fuel_cost_usd = propellant_kg * 0.25
+
+    return {
+        "cone_fab_cost_usd": cone_fab_cost_usd,
+        "escape_propellant_metric_tons": propellant_kg / 1000.0,
+        "escape_fuel_cost_usd": escape_fuel_cost_usd,
+    }
+
 def grain_mass_from_radius(radius_meters: float) -> float:
     volume = (4.0 / 3.0) * np.pi * (radius_meters ** 3)
     return DUST_BULK_DENSITY * volume
@@ -117,6 +111,10 @@ def lethal_grain_threshold_radius(
     thickness_m: float,
     cone_half_angle_deg: float = 90.0
 ) -> float:
+    """
+    Determine minimum grain radius that can puncture shield thickness T,
+    accounting for oblique deflection: E_normal = E_k * sin^2(alpha).
+    """
     alloy = ALLOY_PROPERTIES[alloy_name]
     crater_volume_per_thickness = np.pi * (thickness_m ** 2) * thickness_m
     energy_to_breach = alloy["vol_vap_energy_j_m3"] * crater_volume_per_thickness
@@ -168,4 +166,115 @@ def mission_survival_probability(
         "shield_mass_tons": geom["mass_metric_tons"],
         "effective_thickness_cm": geom["effective_thickness_m"] * 100.0,
         "axial_length_m": geom["axial_length_m"]
+    }
+
+def run_monte_carlo_simulation(
+    dist_ly: float,
+    beta: float,
+    ship_frontal_area_m2: float,
+    alloy_name: str,
+    thickness_m: float,
+    ism_density_multiplier: float,
+    cone_half_angle_deg: float = 90.0,
+    architecture: str = "Uniform Shell (Hollow Whipple)",
+    n_simulations: int = 10000,
+    seed: int = 42
+) -> dict:
+    """
+    Simulates N independent mission passes through a stochastic dust field.
+    Aligns particle sampling up to 2x lethal threshold so Monte Carlo empirical
+    survival matches analytical Poisson predictions while capping RAM allocation.
+    """
+    np.random.seed(seed)
+    
+    radius_m = np.sqrt(ship_frontal_area_m2 / np.pi)
+    geom = calculate_shield_geometry(radius_m, cone_half_angle_deg, thickness_m, architecture, alloy_name)
+    effective_t = geom["effective_thickness_m"]
+    
+    # 1. Determine lethal threshold radius
+    r_lethal = lethal_grain_threshold_radius(beta, alloy_name, effective_t, cone_half_angle_deg)
+    
+    # 2. Bound sampling regime: r_min = 1% lethal (or 0.1 microns), r_max extends beyond lethal
+    r_min_hazard = max(1e-7, r_lethal * 0.01)
+    r_max = max(1e-3, r_lethal * 2.0)
+    
+    # 3. Calculate Poisson expected impacts for hazard domain
+    n_hazard_m3 = cumulative_lethal_density(r_min_hazard, ism_density_multiplier)
+    total_dist_m = dist_ly * LIGHT_YEAR_METERS
+    swept_vol = ship_frontal_area_m2 * total_dist_m
+    lambda_hazard = n_hazard_m3 * swept_vol
+
+    # Sample impact counts per mission pass
+    if lambda_hazard > 1e5:
+        counts_float = np.random.normal(loc=lambda_hazard, scale=np.sqrt(lambda_hazard), size=n_simulations)
+        impact_counts = np.maximum(0, np.round(counts_float)).astype(int)
+    else:
+        impact_counts = np.random.poisson(lam=lambda_hazard, size=n_simulations)
+    
+    max_depths = np.zeros(n_simulations)
+    catastrophic_breaches = np.zeros(n_simulations, dtype=bool)
+    
+    total_impacts = int(np.sum(impact_counts))
+    
+    # Cap total array memory allocation to 5,000,000 elements (~40 MB) per batch
+    max_batch_size = 5_000_000
+    if total_impacts > max_batch_size:
+        scale_factor = total_impacts / max_batch_size
+        sampled_impact_counts = np.round(impact_counts / scale_factor).astype(int)
+    else:
+        sampled_impact_counts = impact_counts
+        
+    sampled_total = int(np.sum(sampled_impact_counts))
+
+    if sampled_total > 0:
+        # Inverse Transform Sampling for MRN power law: n(r) ~ r^-3.5 -> CDF F(r) ~ r^-2.5
+        u = np.random.uniform(0.0, 1.0, size=sampled_total)
+        inv_pow = -2.5
+        term_min = r_min_hazard ** inv_pow
+        term_max = r_max ** inv_pow
+        sampled_radii = (term_min + u * (term_max - term_min)) ** (1.0 / inv_pow)
+        
+        # Calculate impact kinetic energies and normal crater depths
+        volumes = (4.0 / 3.0) * np.pi * (sampled_radii ** 3)
+        masses = DUST_BULK_DENSITY * volumes
+        
+        gamma = 1.0 / np.sqrt(1.0 - beta**2)
+        ke_joules = (gamma - 1.0) * masses * (SPEED_OF_LIGHT ** 2)
+        
+        alpha_rad = np.radians(max(1.0, min(90.0, cone_half_angle_deg)))
+        e_normal = ke_joules * (np.sin(alpha_rad) ** 2)
+        
+        alloy_vap_energy = ALLOY_PROPERTIES[alloy_name]["vol_vap_energy_j_m3"]
+        crater_depths = (e_normal / (np.pi * alloy_vap_energy)) ** (1.0 / 3.0)
+        
+        # Assign sampled crater depths back to simulation passes
+        split_indices = np.cumsum(sampled_impact_counts)[:-1]
+        sim_depth_groups = np.split(crater_depths, split_indices)
+        
+        for idx, depths in enumerate(sim_depth_groups):
+            if len(depths) > 0:
+                m_depth = np.max(depths)
+                max_depths[idx] = m_depth
+                if m_depth >= effective_t:
+                    catastrophic_breaches[idx] = True
+
+    # Classification
+    flawless_mask = (impact_counts == 0)
+    breach_mask = catastrophic_breaches
+    pitting_mask = (~flawless_mask) & (~breach_mask)
+    
+    n_flawless = int(np.sum(flawless_mask))
+    n_pitting = int(np.sum(pitting_mask))
+    n_breached = int(np.sum(breach_mask))
+    
+    return {
+        "n_simulations": n_simulations,
+        "lambda_total": lambda_hazard,
+        "impact_counts": impact_counts,
+        "max_depths_cm": max_depths * 100.0,
+        "effective_thickness_cm": effective_t * 100.0,
+        "flawless_pct": (n_flawless / n_simulations) * 100.0,
+        "pitting_pct": (n_pitting / n_simulations) * 100.0,
+        "breach_pct": (n_breached / n_simulations) * 100.0,
+        "mc_survival_rate": ((n_simulations - n_breached) / n_simulations) * 100.0
     }

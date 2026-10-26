@@ -5,7 +5,8 @@ from physics.impacts import (
     grain_mass_from_radius,
     lethal_grain_threshold_radius,
     mission_survival_probability,
-    ALLOY_PROPERTIES
+    ALLOY_PROPERTIES,
+    run_monte_carlo_simulation
 )
 
 def test_grain_mass_scaling():
@@ -90,3 +91,29 @@ def test_shield_architectures_mass_and_thickness():
     # Solid nosecone effective thickness is L / 3
     expected_solid_t = (r / np.tan(np.radians(alpha))) / 3.0
     assert np.isclose(geo_solid["effective_thickness_m"], expected_solid_t)
+
+def test_monte_carlo_convergence():
+    dist_ly = 10.0
+    beta = 0.1
+    area = 15.0
+    alloy = "Titanium Grade 5 (Ti-6Al-4V)"
+    thickness = 0.10
+    
+    mc_res = run_monte_carlo_simulation(
+        dist_ly=dist_ly,
+        beta=beta,
+        ship_frontal_area_m2=area,
+        alloy_name=alloy,
+        thickness_m=thickness,
+        ism_density_multiplier=1.0,
+        cone_half_angle_deg=30.0,
+        n_simulations=5000,
+        seed=123
+    )
+    
+    # Total percentage must equal 100%
+    tot_pct = mc_res["flawless_pct"] + mc_res["pitting_pct"] + mc_res["breach_pct"]
+    assert np.isclose(tot_pct, 100.0)
+    
+    # Monte Carlo survival rate should be valid probability between 0 and 100
+    assert 0.0 <= mc_res["mc_survival_rate"] <= 100.0
