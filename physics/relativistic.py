@@ -129,3 +129,107 @@ def optimize_cruise_velocity(
         "cost_value": float(res.fun),
         "success": res.success
     }
+
+# Append to the bottom of physics/relativistic.py
+
+ENGINE_TYPES = {
+    "Nuclear Fusion (Project Daedalus)": {
+        "ve_c": 0.03,              # 3% of light speed exhaust
+        "fuel_density": 71.0,      # Liquid Hydrogen / He-3 kg/m^3
+        "tank_length_m": 300.0,    # Max length of fuel tanks before expanding radially
+        "description": "Deuterium/Helium-3 pellets ignited by inertial confinement."
+    },
+    "Antimatter Beam Core": {
+        "ve_c": 0.33,              # 33% of light speed exhaust (charged pions)
+        "fuel_density": 1000.0,    # Water/Tungsten containment medium kg/m^3
+        "tank_length_m": 200.0,
+        "description": "Proton-antiproton annihilation channeling charged pions via magnetic nozzles."
+    },
+    "Perfect Photon Drive (Theoretical)": {
+        "ve_c": 1.00,              # 100% of light speed exhaust
+        "fuel_density": 2000.0,    # Exotic dense matter / compact containment
+        "tank_length_m": 100.0,
+        "description": "Total matter-energy conversion emitting pure directed radiation."
+    }
+}
+
+def solve_mass_area_feedback(
+    beta: float,
+    payload_mass_kg: float,
+    engine_type: str,
+    alloy_name: str,
+    thickness_m: float,
+    cone_half_angle_deg: float,
+    architecture: str
+) -> dict:
+    """
+    Iterative solver that resolves the coupled 'mass-area' feedback loop.
+    Iterates until the fuel tank radius and the required shield radius converge.
+    """
+    from physics.impacts import calculate_shield_geometry
+    
+    engine = ENGINE_TYPES[engine_type]
+    ve_c = engine["ve_c"]
+    rho = engine["fuel_density"]
+    l_tank = engine["tank_length_m"]
+    
+    if beta <= 0.0 or beta >= 1.0:
+        return {"converged": False, "initial_mass_kg": float('inf')}
+        
+    # Relativistic Rocket Equation for accelerating AND decelerating
+    # M_initial / M_final = ((1 + beta) / (1 - beta)) ^ (1 / ve_c)
+    try:
+        mass_ratio = ((1.0 + beta) / (1.0 - beta)) ** (1.0 / ve_c)
+    except OverflowError:
+        mass_ratio = float('inf')
+        
+    base_radius = 4.5  # Minimum radius to occlude the payload section
+    current_r = base_radius
+    converged = False
+    
+    m_shield = 0.0
+    m_initial = float('inf')
+    m_fuel = float('inf')
+    m_dry = payload_mass_kg
+    
+    # Iterate to find structural convergence (max 50 loops)
+    for i in range(50):
+        geom = calculate_shield_geometry(current_r, cone_half_angle_deg, thickness_m, architecture, alloy_name)
+        m_shield = geom["mass_kg"]
+        m_dry = payload_mass_kg + m_shield
+        
+        if mass_ratio > 1e10:
+            m_initial = float('inf')
+            break
+            
+        m_initial = m_dry * mass_ratio
+        if m_initial > 1e15:  # Diverged to > 1 trillion tons
+            m_initial = float('inf')
+            break
+            
+        m_fuel = m_initial - m_dry
+        v_fuel = m_fuel / rho
+        
+        # Calculate tank radius needed to hold the fuel
+        r_tank = np.sqrt(v_fuel / (np.pi * l_tank))
+        r_new = max(base_radius, r_tank)
+        
+        # Check for convergence
+        if abs(r_new - current_r) < 0.01:
+            converged = True
+            current_r = r_new
+            break
+            
+        current_r = r_new
+        
+    return {
+        "converged": converged,
+        "mass_ratio": mass_ratio,
+        "final_radius_m": current_r,
+        "frontal_area_m2": np.pi * (current_r ** 2),
+        "shield_mass_kg": m_shield,
+        "dry_mass_kg": m_dry,
+        "initial_mass_kg": m_initial,
+        "fuel_mass_kg": m_fuel,
+        "iterations": i + 1
+    }

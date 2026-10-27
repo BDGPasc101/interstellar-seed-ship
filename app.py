@@ -9,7 +9,10 @@ from physics.relativistic import (
     kinetic_energy_joules,
     energy_to_tnt_megatons,
     lorentz_factor,
-    optimize_cruise_velocity
+    optimize_cruise_velocity,
+    ENGINE_TYPES,
+    solve_mass_area_feedback,
+    SPEED_OF_LIGHT
 )
 from physics.impacts import (
     mission_survival_probability,
@@ -33,7 +36,7 @@ def load_target_data():
 st.title("Relativistic Seed Ship: Interstellar Impact & Survival Simulator")
 st.markdown(
     "Model interstellar transit hazards, relativistic kinetic energy transfers, "
-    "and hull breach probabilities against dust in the Interstellar Medium (ISM)."
+    "hull breach probabilities against dust in the Interstellar Medium (ISM), and coupled propulsion mass budgets."
 )
 
 try:
@@ -42,6 +45,7 @@ except FileNotFoundError:
     st.error("Target data not found. Run python fetch_relativistic_targets.py first.")
     st.stop()
 
+# --- SIDEBAR: MISSION CONFIGURATION ---
 st.sidebar.header("Mission Architecture")
 
 target_names = df_targets['pl_name'].tolist()
@@ -93,6 +97,7 @@ armor_thickness_cm = st.sidebar.slider(
 )
 armor_thickness_m = armor_thickness_cm / 100.0
 
+# --- CORE CALCULATIONS ---
 times = travel_times(target['dist_ly'], beta)
 
 survival_metrics = mission_survival_probability(
@@ -117,6 +122,7 @@ deg_metrics = mission_survival_with_degradation(
     architecture=selected_architecture
 )
 
+# --- KEY METRICS ROW ---
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Distance", f"{target['dist_ly']:.2f} ly")
 col2.metric("Earth Frame Time", f"{times['coord_time_years']:.1f} yrs")
@@ -130,6 +136,7 @@ col5.metric("Shield Mass", f"{survival_metrics['shield_mass_tons']:,.1f} t")
 
 st.divider()
 
+# --- SURVIVAL & IMPACT BANNER ---
 col_surv_metric, col_shield_metric = st.columns(2)
 
 with col_surv_metric:
@@ -157,10 +164,12 @@ with col_shield_metric:
 
 st.divider()
 
-tab_curves, tab_comparison, tab_shield_design, tab_monte_carlo = st.tabs([
+# --- TABS ---
+tab_curves, tab_comparison, tab_shield_design, tab_propulsion, tab_monte_carlo = st.tabs([
     "Velocity Trade-Off Analysis",
     "Target System Comparison",
     "Shield Geometry & Mass Budget",
+    "Propulsion & Fuel Budget",
     "Monte Carlo Hazard Simulation"
 ])
 
@@ -220,6 +229,7 @@ with tab_curves:
 
     st.divider()
     st.subheader("SciPy Optimal Trajectory Solver")
+    st.markdown("Automated loss-function minimization using `scipy.optimize.minimize_scalar`.")
     col_opt_w1, col_opt_w2 = st.columns(2)
     w_time = col_opt_w1.slider("Weight: Transit Time Minimization", 0.1, 10.0, 1.0, 0.1)
     w_risk = col_opt_w2.slider("Weight: Breach Risk Minimization", 0.1, 10.0, 5.0, 0.1)
@@ -244,6 +254,8 @@ with tab_curves:
             col_o1.metric("Optimal Ship Time", f"{opt['optimal_ship_years']:.1f} yrs")
             col_o2.metric("Optimal Earth Time", f"{opt['optimal_earth_years']:.1f} yrs")
             col_o3.metric("Optimal Survival Prob", f"{opt['optimal_survival_prob'] * 100:.2f}%")
+        else:
+            st.error("Optimization failed to converge within bounds.")
 
 with tab_comparison:
     st.subheader("Cross-Target Trajectory Risk")
@@ -328,6 +340,116 @@ with tab_shield_design:
         st.write(f"- **Apex Thickness:** `{geom['apex_thickness_m'] * 100:.1f} cm`")
         st.write(f"- **Base Thickness:** `{geom['base_thickness_m'] * 100:.1f} cm`")
 
+with tab_propulsion:
+    st.subheader("Relativistic Rocket Equation & Mass-Area Convergence")
+    st.markdown(
+        "Solves the iterative feedback loop: more fuel requires wider tanks &rarr; "
+        "wider tanks require a wider shield &rarr; heavier shield requires more fuel."
+    )
+    
+    col_prop1, col_prop2 = st.columns(2)
+    payload_mass_tons = col_prop1.slider("Base Payload Mass (Metric Tons)", 100, 20000, 5000, 100)
+    engine_choice = col_prop2.selectbox("Main Propulsion System", list(ENGINE_TYPES.keys()), index=1)
+    
+    st.info(f"**{engine_choice}:** {ENGINE_TYPES[engine_choice]['description']} "
+            f"(Exhaust Velocity: {ENGINE_TYPES[engine_choice]['ve_c']}c)")
+    
+    prop_res = solve_mass_area_feedback(
+        beta=beta,
+        payload_mass_kg=payload_mass_tons * 1000.0,
+        engine_type=engine_choice,
+        alloy_name=selected_alloy,
+        thickness_m=armor_thickness_m,
+        cone_half_angle_deg=cone_half_angle,
+        architecture=selected_architecture
+    )
+    
+    if prop_res["converged"]:
+        st.success(f"Structural Iteration Converged successfully in {prop_res['iterations']} passes.")
+        col_pr1, col_pr2, col_pr3, col_pr4 = st.columns(4)
+        col_pr1.metric("Accel/Decel Mass Ratio", f"{prop_res['mass_ratio']:.1f}:1")
+        col_pr2.metric("Coupled Shield Radius", f"{prop_res['final_radius_m']:.2f} m")
+        col_pr3.metric("Converged Shield Mass", f"{prop_res['shield_mass_kg'] / 1e3:,.0f} t")
+        col_pr4.metric("Required Fuel Mass", f"{prop_res['fuel_mass_kg'] / 1e3:,.0f} t")
+    else:
+        st.error(
+            "?? **Design Impossible: The Mass-Area Death Spiral**\n\n"
+            "The required fuel mass forced the tanks to expand radially. To protect those massive tanks, "
+            "the nosecone shield became so heavy that the engine couldn't move it, requiring even more fuel. "
+            "The solver timed out as the ship's mass spiraled toward infinity."
+        )
+        col_pr1, col_pr2, col_pr3, col_pr4 = st.columns(4)
+        col_pr1.metric("Accel/Decel Mass Ratio", f"{prop_res['mass_ratio']:.1f}:1")
+        col_pr2.metric("Coupled Shield Radius", "DIVERGED")
+        col_pr3.metric("Converged Shield Mass", "DIVERGED")
+        col_pr4.metric("Required Fuel Mass", "DIVERGED")
+    
+    if prop_res['fuel_mass_kg'] != float('inf'):
+        col_pr3.metric("Converged Shield Mass", f"{prop_res['shield_mass_kg'] / 1e3:,.0f} t")
+        col_pr4.metric("Required Fuel Mass", f"{prop_res['fuel_mass_kg'] / 1e3:,.0f} t")
+    else:
+        col_pr3.metric("Converged Shield Mass", "INFINITE")
+        col_pr4.metric("Required Fuel Mass", "INFINITE")
+
+    # --- KARDASHEV SCALE ENERGY COST MODULE ---
+    if engine_choice == "Antimatter Beam Core" and prop_res['fuel_mass_kg'] != float('inf'):
+        st.divider()
+        st.subheader("Megastructure Synthesis: Antimatter Production Cost")
+        
+        # A beam core uses a 1:1 ratio of matter and antimatter for annihilation.
+        am_mass_kg = prop_res['fuel_mass_kg'] / 2.0
+        
+        # Pair production requires 2 * m * c^2 to make the antimatter 
+        # (creating an equal amount of normal matter as a byproduct).
+        energy_ideal_joules = 2.0 * am_mass_kg * (SPEED_OF_LIGHT ** 2)
+        
+        earth_annual_joules = 6.0e20
+        earth_years_ideal = energy_ideal_joules / earth_annual_joules
+        
+        col_am1, col_am2, col_am3 = st.columns(3)
+        col_am1.metric("Pure Antimatter Req.", f"{am_mass_kg / 1e3:,.0f} t")
+        col_am2.metric("Synthesis Energy (Ideal)", f"{energy_ideal_joules:.2e} J")
+        col_am3.metric("Earth Energy Equivalent", f"{earth_years_ideal:,.0f} yrs")
+        
+        st.warning(
+            f"**Kardashev Scale Requirements:** To produce `{am_mass_kg / 1e3:,.0f} tons` of antimatter "
+            f"at 100% perfect efficiency requires `{earth_years_ideal:,.0f} years` of Earth's *entire* current "
+            f"global energy output. At a realistic 1% synthesis efficiency, this jumps to "
+            f"`{earth_years_ideal * 100:,.0f} years`. This fuel budget mandates a Circum-Solar Dyson Swarm."
+        )
+
+    st.divider()
+    st.subheader(f"The Asymptote: Total Ship Mass vs Velocity ({engine_choice})")
+    
+    # Calculate the propulsion curve
+    beta_range_prop = np.linspace(0.01, 0.85, 40)
+    prop_data = []
+    
+    for b in beta_range_prop:
+        res = solve_mass_area_feedback(
+            beta=b, payload_mass_kg=payload_mass_tons * 1000.0, engine_type=engine_choice,
+            alloy_name=selected_alloy, thickness_m=armor_thickness_m,
+            cone_half_angle_deg=cone_half_angle, architecture=selected_architecture
+        )
+        if res["initial_mass_kg"] != float('inf'):
+            prop_data.append({
+                "beta": b,
+                "Total Ship Mass (Tons)": res["initial_mass_kg"] / 1000.0,
+                "Fuel Mass (Tons)": res["fuel_mass_kg"] / 1000.0
+            })
+            
+    if prop_data:
+        df_prop = pd.DataFrame(prop_data)
+        fig_prop = px.line(
+            df_prop, x="beta", y=["Total Ship Mass (Tons)", "Fuel Mass (Tons)"],
+            log_y=True, title="Exponential Fuel Requirements (Log Scale)",
+            labels={"value": "Mass (Metric Tons)", "beta": "Cruise Velocity (beta = v/c)"}
+        )
+        fig_prop.update_layout(template="plotly_dark", height=500, legend_title_text="Mass Component")
+        st.plotly_chart(fig_prop, use_container_width=True)
+    else:
+        st.warning("No finite solutions exist for the selected engine in this velocity range.")
+
 with tab_monte_carlo:
     st.subheader("Stochastic Flight Pass Simulation (10,000 Independent Trials)")
     st.markdown("Uses distance-based ablation scaling to evaluate hazard survival dynamically across the trajectory.")
@@ -358,6 +480,7 @@ with tab_monte_carlo:
 
         fig_pie = px.pie(
             df_outcomes, values="Percentage", names="Outcome",
+            title="Mission Outcome Distribution across 10,000 Passes",
             color="Outcome", color_discrete_map={
                 "Flawless Transit": "#00FFAA", "Pitting Damage": "#FF8800", "Catastrophic Breach": "#FF3344"
             }
@@ -384,3 +507,5 @@ with tab_monte_carlo:
             yaxis_title="Number of Missions (out of 10,000)"
         )
         st.plotly_chart(fig_hist, use_container_width=True)
+    else:
+        st.info("Click **Run 10,000 Flight Passes** to trigger the vectorized Monte Carlo engine.")
