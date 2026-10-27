@@ -1,5 +1,7 @@
 import pytest
 import numpy as np
+import numpy as np
+from physics.relativistic import optimize_cruise_velocity
 from physics.relativistic import (
     lorentz_factor,
     travel_times,
@@ -43,3 +45,19 @@ def test_kinetic_energy_limit():
     classical_ke = 0.5 * mass * (v ** 2)
     rel_ke = kinetic_energy_joules(mass, beta_small)
     assert np.isclose(rel_ke, classical_ke, rtol=1e-3)
+
+def test_optimizer_finds_bounded_beta():
+    opt_res = optimize_cruise_velocity(
+        dist_ly=10.0,
+        ship_frontal_area_m2=15.0,
+        alloy_name="Titanium Grade 5 (Ti-6Al-4V)",
+        thickness_m=0.10,
+        ism_density_multiplier=1.0,
+        cone_half_angle_deg=30.0,
+        weight_time=1.0,
+        weight_risk=5.0
+    )
+    
+    assert opt_res["success"] is True
+    assert 0.01 <= opt_res["optimal_beta"] <= 0.95
+    assert 0.0 <= opt_res["optimal_survival_prob"] <= 1.0

@@ -6,9 +6,9 @@ BASE_DUST_NUMBER_DENSITY = 1e-11  # particles / m^3
 
 ALLOY_PROPERTIES = {
     "Titanium Grade 5 (Ti-6Al-4V)": {
-        "density": 4430.0,            # kg/m^3
-        "vol_vap_energy_j_m3": 4.5e10, # J/m^3
-        "fab_cost_per_kg": 120.0       # USD/kg finished aerospace stock
+        "density": 4430.0,
+        "vol_vap_energy_j_m3": 4.5e10,
+        "fab_cost_per_kg": 120.0
     },
     "Tungsten Heavy Alloy": {
         "density": 19300.0,
@@ -35,9 +35,6 @@ def calculate_shield_geometry(
     architecture: str,
     alloy_name: str
 ) -> dict:
-    """
-    Computes axial length, shield volume, mass, and area-weighted effective thickness.
-    """
     alpha_rad = np.radians(max(1.0, min(90.0, cone_half_angle_deg)))
     sin_a = np.sin(alpha_rad)
     tan_a = np.tan(alpha_rad)
@@ -78,21 +75,13 @@ def calculate_shield_geometry(
     }
 
 def calculate_economic_costs(mass_kg: float, alloy_name: str) -> dict:
-    """
-    Computes material fabrication cost and cryogenic propellant mass/fuel 
-    cost required to push the shield mass clear of Earth escape velocity.
-    """
     alloy = ALLOY_PROPERTIES[alloy_name]
-    
-    # 1. Fabrication Cost
     cone_fab_cost_usd = mass_kg * alloy["fab_cost_per_kg"]
     
-    # 2. Tsiolkovsky Earth Escape Stage Propellant (delta_v = 3,200 m/s from LEO)
-    v_e = 380.0 * 9.80665  # Methalox vacuum Isp ~ 380s
+    v_e = 380.0 * 9.80665
     delta_v_escape = 3200.0
     propellant_mass_ratio = np.exp(delta_v_escape / v_e) - 1.0
     propellant_kg = mass_kg * propellant_mass_ratio
-    
     escape_fuel_cost_usd = propellant_kg * 0.25
 
     return {
@@ -111,10 +100,9 @@ def lethal_grain_threshold_radius(
     thickness_m: float,
     cone_half_angle_deg: float = 90.0
 ) -> float:
-    """
-    Determine minimum grain radius that can puncture shield thickness T,
-    accounting for oblique deflection: E_normal = E_k * sin^2(alpha).
-    """
+    if thickness_m <= 0.0:
+        return 0.0
+        
     alloy = ALLOY_PROPERTIES[alloy_name]
     crater_volume_per_thickness = np.pi * (thickness_m ** 2) * thickness_m
     energy_to_breach = alloy["vol_vap_energy_j_m3"] * crater_volume_per_thickness
@@ -134,6 +122,34 @@ def cumulative_lethal_density(r_min: float, ism_multiplier: float) -> float:
     r_eff = max(r_min, 1e-7)
     return BASE_DUST_NUMBER_DENSITY * ((r_reference / r_eff) ** 2.5) * ism_multiplier
 
+def calculate_shield_erosion_rate(
+    beta: float,
+    alloy_name: str,
+    cone_half_angle_deg: float,
+    ism_density_multiplier: float
+) -> float:
+    """
+    Calculates total surface thickness lost per meter traveled (m_eroded / m_traveled)
+    by integrating energy deposited across the continuous sub-micron dust spectrum.
+    """
+    if beta <= 0.0:
+        return 0.0
+        
+    alloy = ALLOY_PROPERTIES[alloy_name]
+    alpha_rad = np.radians(max(1.0, min(90.0, cone_half_angle_deg)))
+    sin_sq = np.sin(alpha_rad) ** 2
+    
+    gamma = 1.0 / np.sqrt(1.0 - beta**2)
+    specific_ke = (gamma - 1.0) * (SPEED_OF_LIGHT ** 2)
+    
+    base_dust_mass_density = 2.0e-23 * ism_density_multiplier
+    normal_energy_density_j_m3 = base_dust_mass_density * specific_ke * sin_sq
+    
+    vol_vaporized_per_m3_swept = normal_energy_density_j_m3 / alloy["vol_vap_energy_j_m3"]
+    erosion_rate_m_per_m = vol_vaporized_per_m3_swept * np.sin(alpha_rad)
+    
+    return erosion_rate_m_per_m
+
 def mission_survival_probability(
     dist_ly: float,
     beta: float,
@@ -145,7 +161,7 @@ def mission_survival_probability(
     architecture: str = "Uniform Shell (Hollow Whipple)"
 ) -> dict:
     if beta <= 0.0:
-        return {"lambda_fatal": 0.0, "survival_prob": 1.0, "r_lethal_microns": float("inf")}
+        return {"lambda_fatal": 0.0, "survival_prob": 1.0, "r_lethal_microns": float("inf"), "shield_mass_tons": 0.0, "effective_thickness_cm": 0.0, "axial_length_m": 0.0}
 
     radius_m = np.sqrt(ship_frontal_area_m2 / np.pi)
     geom = calculate_shield_geometry(radius_m, cone_half_angle_deg, thickness_m, architecture, alloy_name)
@@ -168,6 +184,61 @@ def mission_survival_probability(
         "axial_length_m": geom["axial_length_m"]
     }
 
+def mission_survival_with_degradation(
+    dist_ly: float,
+    beta: float,
+    ship_frontal_area_m2: float,
+    alloy_name: str,
+    thickness_m: float,
+    ism_density_multiplier: float,
+    cone_half_angle_deg: float = 90.0,
+    architecture: str = "Uniform Shell (Hollow Whipple)"
+) -> dict:
+    """
+    Calculates analytical survival probability factoring in continuous shield ablation.
+    """
+    radius_m = np.sqrt(ship_frontal_area_m2 / np.pi)
+    geom = calculate_shield_geometry(radius_m, cone_half_angle_deg, thickness_m, architecture, alloy_name)
+    initial_t = geom["effective_thickness_m"]
+    
+    total_dist_m = dist_ly * LIGHT_YEAR_METERS
+    erosion_rate = calculate_shield_erosion_rate(beta, alloy_name, cone_half_angle_deg, ism_density_multiplier)
+    
+    total_erosion_m = erosion_rate * total_dist_m
+    final_t = max(0.0, initial_t - total_erosion_m)
+    
+    if total_erosion_m >= initial_t:
+        return {
+            "survival_prob_degraded": 0.0,
+            "lambda_fatal_degraded": float('inf'),
+            "total_erosion_cm": total_erosion_m * 100.0,
+            "initial_thickness_cm": initial_t * 100.0,
+            "final_thickness_cm": final_t * 100.0,
+            "armor_loss_pct": 100.0
+        }
+    
+    steps = 100
+    dx = total_dist_m / steps
+    lambda_fatal_degraded = 0.0
+    
+    for i in range(steps):
+        current_x = (i + 0.5) * dx
+        current_t = max(1e-5, initial_t - (erosion_rate * current_x))
+        r_lethal_t = lethal_grain_threshold_radius(beta, alloy_name, current_t, cone_half_angle_deg)
+        n_lethal_t = cumulative_lethal_density(r_lethal_t, ism_density_multiplier)
+        lambda_fatal_degraded += n_lethal_t * ship_frontal_area_m2 * dx
+
+    survival_prob = float(np.exp(-lambda_fatal_degraded))
+
+    return {
+        "survival_prob_degraded": survival_prob,
+        "lambda_fatal_degraded": lambda_fatal_degraded,
+        "total_erosion_cm": total_erosion_m * 100.0,
+        "initial_thickness_cm": initial_t * 100.0,
+        "final_thickness_cm": final_t * 100.0,
+        "armor_loss_pct": min(100.0, (total_erosion_m / initial_t) * 100.0)
+    }
+
 def run_monte_carlo_simulation(
     dist_ly: float,
     beta: float,
@@ -180,31 +251,23 @@ def run_monte_carlo_simulation(
     n_simulations: int = 10000,
     seed: int = 42
 ) -> dict:
-    """
-    Simulates N independent mission passes through a stochastic dust field.
-    Aligns particle sampling up to 2x lethal threshold so Monte Carlo empirical
-    survival matches analytical Poisson predictions while capping RAM allocation.
-    """
     np.random.seed(seed)
     
     radius_m = np.sqrt(ship_frontal_area_m2 / np.pi)
     geom = calculate_shield_geometry(radius_m, cone_half_angle_deg, thickness_m, architecture, alloy_name)
     effective_t = geom["effective_thickness_m"]
     
-    # 1. Determine lethal threshold radius
     r_lethal = lethal_grain_threshold_radius(beta, alloy_name, effective_t, cone_half_angle_deg)
-    
-    # 2. Bound sampling regime: r_min = 1% lethal (or 0.1 microns), r_max extends beyond lethal
     r_min_hazard = max(1e-7, r_lethal * 0.01)
     r_max = max(1e-3, r_lethal * 2.0)
     
-    # 3. Calculate Poisson expected impacts for hazard domain
     n_hazard_m3 = cumulative_lethal_density(r_min_hazard, ism_density_multiplier)
     total_dist_m = dist_ly * LIGHT_YEAR_METERS
     swept_vol = ship_frontal_area_m2 * total_dist_m
     lambda_hazard = n_hazard_m3 * swept_vol
+    
+    erosion_rate = calculate_shield_erosion_rate(beta, alloy_name, cone_half_angle_deg, ism_density_multiplier)
 
-    # Sample impact counts per mission pass
     if lambda_hazard > 1e5:
         counts_float = np.random.normal(loc=lambda_hazard, scale=np.sqrt(lambda_hazard), size=n_simulations)
         impact_counts = np.maximum(0, np.round(counts_float)).astype(int)
@@ -215,8 +278,6 @@ def run_monte_carlo_simulation(
     catastrophic_breaches = np.zeros(n_simulations, dtype=bool)
     
     total_impacts = int(np.sum(impact_counts))
-    
-    # Cap total array memory allocation to 5,000,000 elements (~40 MB) per batch
     max_batch_size = 5_000_000
     if total_impacts > max_batch_size:
         scale_factor = total_impacts / max_batch_size
@@ -227,14 +288,12 @@ def run_monte_carlo_simulation(
     sampled_total = int(np.sum(sampled_impact_counts))
 
     if sampled_total > 0:
-        # Inverse Transform Sampling for MRN power law: n(r) ~ r^-3.5 -> CDF F(r) ~ r^-2.5
         u = np.random.uniform(0.0, 1.0, size=sampled_total)
         inv_pow = -2.5
         term_min = r_min_hazard ** inv_pow
         term_max = r_max ** inv_pow
         sampled_radii = (term_min + u * (term_max - term_min)) ** (1.0 / inv_pow)
         
-        # Calculate impact kinetic energies and normal crater depths
         volumes = (4.0 / 3.0) * np.pi * (sampled_radii ** 3)
         masses = DUST_BULK_DENSITY * volumes
         
@@ -247,18 +306,25 @@ def run_monte_carlo_simulation(
         alloy_vap_energy = ALLOY_PROPERTIES[alloy_name]["vol_vap_energy_j_m3"]
         crater_depths = (e_normal / (np.pi * alloy_vap_energy)) ** (1.0 / 3.0)
         
-        # Assign sampled crater depths back to simulation passes
+        impact_distances_m = np.random.uniform(0.0, total_dist_m, size=sampled_total)
+        thickness_at_impact = effective_t - (erosion_rate * impact_distances_m)
+        thickness_at_impact = np.maximum(thickness_at_impact, 0.0)
+        
+        breaches = crater_depths >= thickness_at_impact
+        
         split_indices = np.cumsum(sampled_impact_counts)[:-1]
         sim_depth_groups = np.split(crater_depths, split_indices)
+        sim_breach_groups = np.split(breaches, split_indices)
         
-        for idx, depths in enumerate(sim_depth_groups):
+        for idx, (depths, brchs) in enumerate(zip(sim_depth_groups, sim_breach_groups)):
             if len(depths) > 0:
-                m_depth = np.max(depths)
-                max_depths[idx] = m_depth
-                if m_depth >= effective_t:
+                max_depths[idx] = np.max(depths)
+                if np.any(brchs):
                     catastrophic_breaches[idx] = True
 
-    # Classification
+    if erosion_rate * total_dist_m >= effective_t:
+        catastrophic_breaches[:] = True
+
     flawless_mask = (impact_counts == 0)
     breach_mask = catastrophic_breaches
     pitting_mask = (~flawless_mask) & (~breach_mask)
