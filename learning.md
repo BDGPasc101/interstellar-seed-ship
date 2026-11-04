@@ -80,3 +80,22 @@ Shield mass is deadweight. We map the calculated geometry to absolute metric ton
 $$ \frac{M_{\text{propellant}}}{M_{\text{shield}}} = e^{\Delta v / v_e} - 1 $$
 
 *(Where $\Delta v = 3,200\text{ m/s}$ for Earth escape and $v_e = 380\text{ s} \cdot 9.81\text{ m/s}^2$ for cryogenic Methalox).*
+
+## Bug Hunt: The Daedalus Flyby Divergence (Square-Cube Law)
+
+**Issue:** 
+The automated test `test_project_daedalus_historical_accuracy` failed with an `AssertionError`. The numerical solver failed to converge on a mass budget for a 0.122c flyby, spiraling to infinity.
+
+**Root Cause Analysis:** 
+The test parameters incorrectly specified `architecture="Solid Nosecone (Machined Slug)"`. 
+1. The solver calculated the initial fuel required for a 1,500-ton payload.
+2. The low-density fusion fuel required tanks roughly 45 meters wide.
+3. The solver attempted to cover these tanks with a **solid** titanium cone 45m wide and 45m long. 
+4. Due to the Square-Cube Law, the volume of this solid cone pushed its mass into the hundreds of thousands of tons.
+5. The solver tried to add more fuel to push the heavier shield, widening the tanks further, triggering the **Mass-Area Death Spiral**.
+
+**The Fix:** 
+Changed the shield architecture parameter to `"Whipple Shield (Single Shell)"`. This allowed the solver to calculate a hollow, 0.01m-thick erosion shield, correctly mirroring the historical 1978 BIS Daedalus paper. The mass decoupled from the volume, and the solver converged immediately at roughly 100,000 tons.
+
+**Engineering Takeaway:** 
+The iterative solver is completely unforgiving regarding structural mass scaling. Spacecraft components must scale by surface area (shells/Whipple shields) rather than volume (solid slugs) to remain viable under the Relativistic Rocket Equation.

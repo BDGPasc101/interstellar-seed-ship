@@ -160,7 +160,8 @@ def solve_mass_area_feedback(
     alloy_name: str,
     thickness_m: float,
     cone_half_angle_deg: float,
-    architecture: str
+    architecture: str,
+    mission_profile: str = "Colony (Accel + Decel)" # <-- NEW PARAMETER
 ) -> dict:
     """
     Iterative solver that resolves the coupled 'mass-area' feedback loop.
@@ -175,11 +176,13 @@ def solve_mass_area_feedback(
     
     if beta <= 0.0 or beta >= 1.0:
         return {"converged": False, "initial_mass_kg": float('inf')}
-        
+    
+    exponent_multiplier = 0.5 if mission_profile == "Flyby (No Deceleration)" else 1.0
     # Relativistic Rocket Equation for accelerating AND decelerating
     # M_initial / M_final = ((1 + beta) / (1 - beta)) ^ (1 / ve_c)
     try:
-        mass_ratio = ((1.0 + beta) / (1.0 - beta)) ** (1.0 / ve_c)
+        # M_initial / M_final = ((1 + beta) / (1 - beta)) ^ (exponent_multiplier / ve_c)
+        mass_ratio = ((1.0 + beta) / (1.0 - beta)) ** (exponent_multiplier / ve_c)
     except OverflowError:
         mass_ratio = float('inf')
         

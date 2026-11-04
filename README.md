@@ -46,8 +46,8 @@ Integrates `scipy.optimize.minimize_scalar` to balance transit time (time dilati
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/yourusername/relativistic-seed-ship.git
-   cd relativistic-seed-ship
+   git clone https://github.com/yourusername/interstellar-seed-ship.git
+   cd interstellar-seed-ship
    ```
 
 2. **Set up a virtual environment (recommended):**
